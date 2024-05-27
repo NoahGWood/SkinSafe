@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en" data-bs-theme="dark">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Skin Safe | Skin Cancer Classifier | Experimental </title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
+  </head>
+  <body style="display: flex; flex-direction: column; align-self: center; text-align: center; margin-top: 5rem;">
+    <h1>Skin Cancer Classifier</h1>
+    <card class="mt-4">
+        <card-header>
+            <h3>Image Selection</h3>
+        </card-header>
+        <card-body class="row">
+            <div class="col">
+                <figure>
+                    <img style="max-width:100%;" id="imageSource">
+                    <input type="file" accept="image/*" id="inputSource">
+                </figure>
+                <figcaption>Start</figcaption>
+            </div>
+            <div class="col">
+                <input-group>
+                <label for="age" class="input-group-text">Age:</label>
+                <input type="number" class="form-control" id="age">
+                </input-group>
+                <input-group>
+                <label for="sex"  class="input-group-text">Sex:</label>
+                <select id="sex" class="form-control">
+                    <option value="0">Male</option>
+                    <option value="1">Female</option>
+                </select>
+                </input-group>
+                <input-group>
+                <label for="location" class="input-group-text">Location:</label>
+                <select id="location" class="form-control">
+                    <option value="0">Abdomen</option>
+                </select>
+                <input-group><label for="thresh" class="form-label" title="Used to change threshold value. You usually don't need to change this.">Segmentation</label>
+                <input type="range" class="form-range" id="thresh" min="0", max="255" value="200" step="1" title="Used to change threshold value. You usually don't need to change this.">
+                </input-group>
+                </input-group>
+            </div>
+            <div class="col">
+                <figure>
+                    <canvas id="output" style="min-width:100%; max-width: 100%; border:1rem solid black;"></canvas>
+                    <figcaption>Segmented</figcaption>
+                </figure>
+            </div>
+        </card-body>
+    </card>
+    <card class="mt-4">
+        <card-header>
+            <h3>Biographic</h3>
+        </card-header>
+        <card-body class="row">
+            <div class="col"></div>
+        </card-body>
+    </card>
+    <h5 class="mt-2"><strong style="color: red;">Notice:</strong>This classifier is highly experimental and is <strong style="color:red">not</strong> suitable for diagnosing any disease.</h5>
+    <script src="https://docs.opencv.org/4.5.0/opencv.js" type="text/javascript"></script>
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
+    <script>
+        let imgElement = document.getElementById("imageSource");
+        let inputElement = document.getElementById("inputSource");
+        inputElement.addEventListener("change", (e) => {
+            imgElement.src = URL.createObjectURL(e.target.files[0]);
+        });
+        imgElement.onload = function() {
+            process();
+        }
+        let threshElement = document.getElementById("thresh");
+        threshElement.addEventListener("change", (e) => {
+            console.log("PROCESSING CHANGE");
+            process();
+        });
+        
+        let ageElement = document.getElementById("age");
+        ageElement.addEventListener
+        let sexElement = document.getElementById("sex");
+        let locationElement = document.getElementById("location");
+
+        function process(){
+            let image = cv.imread(imgElement);
+            let resized = new cv.Mat();
+            let dsize = new cv.Size(600,450);
+            cv.resize(image, resized, dsize, 0, 0, cv.INTER_AREA);
+            // Segment mole
+            let { mask, maxContour } = segment_mole(resized);
+            // Apply mask to image
+            let segment = new cv.Mat();
+            cv.bitwise_and(resized, resized, segment, mask);
+            // Compute symmetry
+            let symmetry = computeSymmetry(mask);
+            // Compute regularity
+            let regularity = computeRegularity(maxContour);
+            // Compute color count
+            let colors = computeColorCount(segment);
+            
+            cv.imshow("output", segment);
+            image.delete();
+            resized.delete();
+            segment.delete();
+            mask.delete();
+            maxContour.delete();
+            // Output results
+            console.log("Symmetry:", symmetry);
+            console.log("Regularity:", regularity);
+            console.log("Color Count:", colors);
+            let features = getFeatures(symmetry, regularity, colors, parseFloat(ageElement.value), parseInt(sexElement.value), parseInt(locationElement.value));
+            predict(features);
+        }
+
+        
+        function segment_mole(mat){
+            let gray = new cv.Mat();
+            cv.cvtColor(mat, gray, cv.COLOR_BGR2GRAY);
+            // Remove hair
+            let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(9,9));
+            let blackhat = new cv.Mat();
+            cv.morphologyEx(gray, blackhat, cv.MORPH_BLACKHAT, kernel);
+            let hairless = new cv.Mat();
+            cv.inpaint(gray, blackhat, hairless, 5, cv.INPAINT_TELEA);
+            // Thresh
+            let thresh = new cv.Mat();
+            cv.threshold(hairless, thresh, parseFloat(threshElement.value), 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU);
+            // Find contours
+            let contours = new cv.MatVector();
+            let hier = new cv.Mat();
+            cv.findContours(thresh, contours, hier, cv.RETR_TREE, cv.CHAIN_APPROX_NONE);
+            let maxContour = null;
+            let maxArea = 0;
+            for(let i=0; i<contours.size(); ++i){
+                let contour = contours.get(i);
+                let area = cv.contourArea(contour);
+                if (area > maxArea){
+                    maxArea = area;
+                    maxContour = contour;
+                }
+            }
+            // Create a new mask
+            let mask = new cv.Mat.zeros(gray.rows, gray.cols, cv.CV_8U);
+            let mv = new cv.MatVector();
+            mv.push_back(maxContour);
+            cv.drawContours(mask, mv, -1, new cv.Scalar(255), cv.FILLED);
+            gray.delete();
+            blackhat.delete();
+            hairless.delete();
+            thresh.delete();
+            contours.delete();
+            hier.delete();
+            cv.imshow("output", mask);
+            return { mask: mask, maxContour: maxContour };
+        }
+        // Function to compute symmetry
+        function computeSymmetry(segmented) {
+            // Get centroid
+            let moments = cv.moments(segmented, false);
+            if (moments.m00 === 0) {
+                return 0;
+            }
+            let cX = moments.m10 / moments.m00;
+            
+            // Split into halves
+            let leftHalf = segmented.roi(new cv.Rect(0, 0, cX, segmented.rows));
+            let rightHalf = segmented.roi(new cv.Rect(cX, 0, segmented.cols - cX, segmented.rows));
+            
+            // Compare halves
+            let reflectedRight = new cv.Mat();
+            cv.flip(rightHalf, reflectedRight, 1);
+            let resizedLeft = new cv.Mat();
+            cv.resize(leftHalf, resizedLeft, new cv.Size(reflectedRight.cols, reflectedRight.rows));
+            
+            let difference = new cv.Mat();
+            cv.absdiff(resizedLeft, reflectedRight, difference);
+            
+            // Compute symmetry score
+            let height = segmented.rows;
+            let width = segmented.cols;
+            let symmetry = cv.countNonZero(difference) / (width * height);
+            
+            leftHalf.delete();
+            rightHalf.delete();
+            reflectedRight.delete();
+            resizedLeft.delete();
+            difference.delete();
+            
+            return symmetry;
+        }
+        
+        // Function to compute regularity
+        function computeRegularity(maxContour) {
+            let perimeter = cv.arcLength(maxContour, true);
+            let area = cv.contourArea(maxContour);
+            let circularity = 4 * Math.PI * (area / (perimeter * perimeter));
+            return circularity;
+        }
+        
+        // Function to compute color count
+        function computeColorCount(segment) {
+            // Convert the image to the LAB color space
+            let labImage = new cv.Mat();
+            cv.cvtColor(segment, labImage, cv.COLOR_BGR2Lab);
+            
+            // Create a set to store unique colors
+            let uniqueColors = new Set();
+            
+            // Iterate over each pixel to add unique colors to the set
+            for (let i = 0; i < labImage.rows; ++i) {
+                for (let j = 0; j < labImage.cols; ++j) {
+                    let pixel = labImage.ucharPtr(i, j);
+                    // Create a unique key for each color (Lab values are 8-bit)
+                    let val= pixel[0] + pixel[0] + pixel[0];
+                    let key = `${val}`;
+                    uniqueColors.add(key);
+                }
+            }
+            labImage.delete();
+            return uniqueColors.size;
+        }
+        const modelUrl = 'model.onnx'; // Replace with your actual model URL
+
+        async function loadModel() {
+            const session = await ort.InferenceSession.create(modelUrl);
+            return session;
+        }
+
+        function getFeatures(symmetry, regularity, colors, age, sex, location){
+            let features = new Float32Array(20);
+            features[0] = symmetry;
+            features[1] = regularity;
+            features[2] = colors;
+            features[3] = age;
+            features[4+sex] = 1.0; // sex
+            features[6+location] = 1.0; // location
+            return features;
+        }
+        async function predict(features){
+            const session = await loadModel();
+            const tensor = new ort.Tensor('float32', features, [1, features.length]);
+            const inputs = {float_input: tensor};
+            const results = await session.run(inputs);
+            const output = results[session.outputNames[0]];
+            console.log("Prediction: ", output.data[0]);
+            alert("Prediction: " + output.data[0]);
+            
+        }
+        </script>
+  </body>
+</html>
