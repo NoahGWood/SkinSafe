@@ -220,7 +220,7 @@
             labImage.delete();
             return uniqueColors.size;
         }
-        const modelUrl = 'model.onnx'; // Replace with your actual model URL
+        const modelUrl = 'https://github.com/NoahGWood/SkinSafe/raw/main/model.onxx'; // Replace with your actual model URL
 
         async function loadModel() {
             const session = await ort.InferenceSession.create(modelUrl);
